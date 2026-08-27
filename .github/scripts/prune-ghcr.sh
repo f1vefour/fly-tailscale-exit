@@ -72,15 +72,26 @@ awk -F"$tab" -v re="$sig_re" 'NF>=4 && $4 ~ re { print $4 "\t" $2 }' "$all" >"$s
 # Build the keep set: each kept release, the child manifests it references
 # (image + provenance/SBOM attestation; `[]?` no-ops for a plain manifest), and
 # the cosign artifact covering it plus that artifact's own child manifest(s).
+#
+# A failed inspect must abort the run: piped directly into jq its failure would
+# be masked (jq succeeds on empty input), silently omitting a kept release's
+# children from the keep set -- and the delete loop below would then remove
+# them, breaking the kept release. The command substitution makes the failure
+# fatal under set -e, before anything is deleted.
+children() {
+  raw="$(docker buildx imagetools inspect --raw "${IMAGE}@${1}")"
+  printf '%s\n' "$raw" | jq -r '.manifests[]?.digest'
+}
+
 keep="$(mktemp)"
 while IFS= read -r d; do
   printf '%s\n' "$d"
-  docker buildx imagetools inspect --raw "${IMAGE}@${d}" | jq -r '.manifests[]?.digest'
+  children "$d"
   want="sha256-${d#sha256:}"
   sdig="$(awk -F"$tab" -v w="$want" '$1 == w || $1 == w ".sig" { print $2; exit }' "$sigmap")"
   if [ -n "$sdig" ]; then
     printf '%s\n' "$sdig"
-    docker buildx imagetools inspect --raw "${IMAGE}@${sdig}" | jq -r '.manifests[]?.digest'
+    children "$sdig"
   fi
 done <"$keep_indexes" >>"$keep"
 
